@@ -244,10 +244,21 @@ pre.code{background:var(--bg);border:1px solid var(--line);padding:12px;border-r
 
 /* figuras (psicotécnicos) */
 .qimg{background:#f4f6f5;border-radius:var(--r);padding:8px;max-width:100%;overflow-x:auto}
-.qimg img{display:block;max-width:100%;height:auto;margin:0 auto}
+.qimg img{display:block;max-width:100%;height:auto;margin:0 auto;cursor:zoom-in}
+.qimg{position:relative}
+.qimg.sol{margin-top:10px;border-left:3px solid var(--green)}
+.qimg::after{content:"toca la figura para ampliarla";display:block;text-align:right;margin-top:4px;font:400 10px/1.2 var(--font-ui);letter-spacing:.06em;color:#56635d;pointer-events:none}
+.zoomer{position:fixed;inset:0;z-index:80;background:var(--bg);display:flex;flex-direction:column}
+.zoomer .zbar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;border-bottom:1px solid var(--line)}
+.zoomer .zbody{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;background:#f4f6f5;padding:8px;touch-action:pan-x pan-y pinch-zoom}
+.zoomer .zbody img{display:block;margin:0 auto;height:auto}
 .opt .imgopt{background:#f4f6f5;border-radius:2px;padding:4px;display:inline-block;max-width:100%}
 .opt .imgopt img{display:block;max-width:100%;max-height:150px;height:auto}
 .opts.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+/* opciones cortas (letras de una figura, números): una fila de botones grandes */
+.opts.short{display:grid;grid-template-columns:repeat(auto-fit,minmax(68px,1fr))}
+.opts.short .opt{grid-template-columns:auto auto;justify-content:center;gap:10px;min-height:56px;font-family:var(--font-ui);font-size:calc(1.1rem * var(--read-scale))}
+.opts.short .opt .k{width:32px;height:32px}
 
 /* avisos fijos: actualización e instalación */
 .banner{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--cyan);background:var(--cyan-bg);color:var(--fg);padding:10px 12px;border-radius:var(--r);font-size:var(--fs-s)}
@@ -321,7 +332,7 @@ const BUILD = (() => {
   const ua = navigator.userAgent || "";
   const ios = /iP(hone|od|ad)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   let standalone = false; try{ standalone = window.navigator.standalone === true || matchMedia("(display-mode: standalone)").matches; }catch(e){}
-  return {pwa: true, id: "89ccdebb40", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
+  return {pwa: true, id: "02a1ae83fb", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
 })();
 const MODS = {
   ingles:        {cs:"ING", name:"Inglés",         cls:"ing"},
@@ -349,6 +360,7 @@ function fmtN(x,d=2){ return (Math.round(x*Math.pow(10,d))/Math.pow(10,d)).toLoc
 function pct(a,b){ return b ? Math.round(100*a/b) : 0; }
 function toast(msg, err=false){ const t=$("#toast"); t.textContent=msg; t.className="toast"+(err?" err":""); t.hidden=false; clearTimeout(toast._t); toast._t=setTimeout(()=>t.hidden=true, 3200); }
 function safeImg(src){ return (typeof src === "string" && src.length < 3e6 && /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(src)) ? src : ""; }
+function optsClass(q){ if(hasFigOpts(q)) return "figs"; return q.opciones.every(o=>typeof o==="string" && o.trim().length<=6) ? "short" : ""; }
 function hasFigOpts(q){ return q.opciones.some(o=>o && typeof o==="object" && (o.img || o.imgRef || o.svg)); }
 function figHTML(q, cls="qimg"){ return q.img && safeImg(q.img) ? `<div class="${cls}"><img src="${safeImg(q.img)}" alt="Figura del enunciado"></div>` : (q.imgRef ? `<div class="dim" style="font-size:var(--fs-xs)">(figura no disponible: la pregunta ya no está en el banco)</div>` : ""); }
 function safeSVG(str){
@@ -443,7 +455,7 @@ const Crypt = (() => {
   async function key(pass, salt){ const base=await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveKey"]); return crypto.subtle.deriveKey({name:"PBKDF2", salt, iterations:310000, hash:"SHA-256"}, base, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]); }
   async function seal(obj, k, salt){ const iv=crypto.getRandomValues(new Uint8Array(12)); const ct=await crypto.subtle.encrypt({name:"AES-GCM", iv}, k, enc.encode(JSON.stringify(obj))); return {formato:"atc-cifrado", v:1, salt:b64(salt), iv:b64(iv), ct:b64(ct)}; }
   async function open(box, k){ const pt=await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(box.iv)}, k, unb64(box.ct)); return JSON.parse(dec.decode(pt)); }
-  return {available, key, seal, open, unb64, newSalt:()=>crypto.getRandomValues(new Uint8Array(16))};
+  return {available, key, seal, open, b64, unb64, newSalt:()=>crypto.getRandomValues(new Uint8Array(16))};
 })();
 
 /* ---------------- estado ---------------- */
@@ -464,17 +476,213 @@ function rebuildIndex(){
 }
 function allQ(){ return [...S.byId.values()]; }
 
-async function persist(){
-  const data = {imported:S.imported, prog:S.prog};
+/* El banco importado puede ocupar decenas de MB (figuras): solo se reescribe cuando cambia.
+   El progreso se guarda en cada test. Con contraseña, cada parte va cifrada por separado. */
+let bankDirty = false;
+const VAULT_KEYS = ["vault", "vault_bank", "vault_prog"];
+async function persist(opts={}){
+  const bank = !!(opts.bank || bankDirty);
   if(S.set.lock && S.vault.key){
-    const box = await Crypt.seal(data, S.vault.key, S.vault.salt);
-    await Store.set("vault", box); await Store.del("imported"); await Store.del("prog");
+    if(bank) await Store.set("vault_bank", await Crypt.seal(S.imported, S.vault.key, S.vault.salt));
+    await Store.set("vault_prog", await Crypt.seal(S.prog, S.vault.key, S.vault.salt));
+    if(bank){ await Store.del("vault"); await Store.del("imported"); }
+    await Store.del("prog");
   }else{
-    await Store.set("imported", S.imported); await Store.set("prog", S.prog);
+    if(bank) await Store.set("imported", S.imported);
+    await Store.set("prog", S.prog);
   }
+  if(bank){ bankDirty = false; await Sync.saveSec(); }
+}
+async function hasVault(){ for(const k of VAULT_KEYS) if(await Store.get(k)) return true; return false; }
+async function openVault(pass){
+  const legacy = await Store.get("vault");
+  if(legacy){ const k=await Crypt.key(pass, Crypt.unb64(legacy.salt)); const d=await Crypt.open(legacy,k); return {k, salt:Crypt.unb64(legacy.salt), imported:d.imported||[], prog:d.prog||defaultsProg(), legacy:true}; }
+  const vb = await Store.get("vault_bank"), vp = await Store.get("vault_prog");
+  const ref = vp || vb; if(!ref) return null;
+  const k = await Crypt.key(pass, Crypt.unb64(ref.salt));
+  const prog = vp ? await Crypt.open(vp, k) : defaultsProg();
+  const imported = vb ? await Crypt.open(vb, k) : [];
+  return {k, salt:Crypt.unb64(ref.salt), imported, prog};
 }
 async function saveSettings(){ await Store.set("settings", S.set); applySettings(); }
 function applySettings(){ document.documentElement.style.setProperty("--read-scale", S.set.readScale||1); $("#btn-lock").hidden = !(S.set.lock && S.vault.key); }
+
+/* ---------------- sincronización entre dispositivos: repositorio PRIVADO de GitHub del usuario ----------------
+   Todo se cifra aquí (AES-GCM, clave derivada de la contraseña de sincronización) antes de subirlo: GitHub solo ve datos cifrados.
+   Banco importado por lotes (en partes de ~2,5 MB), progreso (tests, repaso, marcas) en un archivo. Fusión a tres bandas con
+   el estado de la última sincronización: lo cambiado en un solo lado gana; si cambia en los dos, se unen las preguntas por id. */
+const Sync = (() => {
+  const API = () => window.ATC_SYNC_API || "https://api.github.com";
+  const DIR = "atc", PART = 2500000;
+  const enc = new TextEncoder();
+  let SEC = null, running = null, soonT = null, keyC = null;
+  const status = {t:0, ok:null, msg:""};
+  const cfg = () => S.set.sync || null;
+  const locked = () => S.set.lock && !S.vault.key;
+  const ready = () => !!(cfg() && cfg().on && cfg().repo && SEC && SEC.token && SEC.pass && Crypt.available() && !locked());
+  async function sha(s){ const h = await crypto.subtle.digest("SHA-256", enc.encode(s)); return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,"0")).join(""); }
+  function httpMsg(s){ return s===401 ? "token no válido o caducado" : s===403 ? "el token no tiene permiso de escritura en el repositorio" : s===404 ? "no encuentro el repositorio (revisa usuario/nombre y que el token tenga acceso a él)" : (s===409||s===422) ? "conflicto: otro dispositivo estaba guardando a la vez" : "GitHub respondió con error " + s; }
+  async function gh(method, path, body, accept){
+    let r;
+    try{ r = await fetch(`${API()}/repos/${cfg().repo}/contents/${path}`, {method, cache:"no-store",
+      headers:{"Authorization":"Bearer " + SEC.token, "Accept": accept || "application/vnd.github+json", ...(body ? {"Content-Type":"application/json"} : {})},
+      body: body ? JSON.stringify(body) : undefined}); }
+    catch(e){ const x = new Error("sin conexión con GitHub"); x.net = true; throw x; }
+    if(r.status === 404 && method === "GET") return null;
+    if(!r.ok){ const x = new Error(httpMsg(r.status)); x.status = r.status; throw x; }
+    return (accept || "").includes("raw") ? r.text() : r.json();
+  }
+  const raw = name => gh("GET", `${DIR}/${name}`, null, "application/vnd.github.raw+json");
+  async function list(){ const a = await gh("GET", DIR); const m = {}; for(const f of (Array.isArray(a) ? a : [])) m[f.name] = f.sha; return m; }
+  async function put(dir, name, text){ const r = await gh("PUT", `${DIR}/${name}`, {message:"APP ATC · " + name, content:Crypt.b64(enc.encode(text)), ...(dir[name] ? {sha:dir[name]} : {})}); dir[name] = r && r.content ? r.content.sha : dir[name]; }
+  async function del(dir, name){ if(!dir[name]) return; await gh("DELETE", `${DIR}/${name}`, {message:"APP ATC · borrar " + name, sha:dir[name]}); delete dir[name]; }
+  async function key(dir){
+    const txt = dir["clave.json"] ? await raw("clave.json") : null;
+    if(!txt){
+      const salt = Crypt.newSalt(), k = await Crypt.key(SEC.pass, salt);
+      const c = {formato:"atc-sync", v:1, salt:Crypt.b64(salt), check:await Crypt.seal("atc", k, salt)};
+      await put(dir, "clave.json", JSON.stringify(c)); keyC = {pass:SEC.pass, salt:c.salt, k}; return k;
+    }
+    const c = JSON.parse(txt);
+    if(keyC && keyC.pass === SEC.pass && keyC.salt === c.salt) return keyC.k;
+    const k = await Crypt.key(SEC.pass, Crypt.unb64(c.salt));
+    let good = false; try{ good = (await Crypt.open(c.check, k)) === "atc"; }catch(e){}
+    if(!good) throw new Error("la contraseña de sincronización no es la misma que usaste en tu otro dispositivo");
+    keyC = {pass:SEC.pass, salt:c.salt, k}; return k;
+  }
+  const sealT = async (obj, k) => JSON.stringify(await Crypt.seal(obj, k, Crypt.unb64(keyC.salt)));
+  const openT = async (name, k) => { const t = await raw(name); if(t == null) throw new Error("falta " + name + " en el repositorio"); return Crypt.open(JSON.parse(t), k); };
+  const loteOf = q => q.lote || "sin lote";
+  async function localLotes(){
+    const g = new Map();
+    for(const q of S.imported){ const l = loteOf(q); if(!g.has(l)) g.set(l, []); g.get(l).push(q); }
+    const out = {};
+    for(const [name, qs] of g){ const s = [...qs].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0); out[(await sha("lote:" + name)).slice(0,16)] = {name, qs:s, h:await sha(JSON.stringify(s))}; }
+    return out;
+  }
+  function parts(qs){ const out = []; let cur = [], sz = 0; for(const q of qs){ const s = JSON.stringify(q).length; if(cur.length && sz + s > PART){ out.push(cur); cur = []; sz = 0; } cur.push(q); sz += s; } if(cur.length) out.push(cur); return out; }
+  const progSig = p => JSON.stringify([(p.attempts||[]).map(a=>a.id).sort(), Object.entries(p.q||{}).map(([id,s])=>[id, s.last||0, s.n||0]).sort(), Object.entries(p.flags||{}).map(([id,f])=>[id, JSON.stringify(f)]).sort()]);
+  async function once(){
+    const dir = await list();
+    const k = await key(dir);
+    const idx = dir["indice.json"] ? await openT("indice.json", k) : {lotes:{}, borrados:{}};
+    idx.lotes = idx.lotes || {}; idx.borrados = idx.borrados || {};
+    const st = (await Store.get("sync_state")) || {base:{}};
+    st.base = st.base || {};
+    const L = await localLotes();
+    if(!Object.keys(L).length && Object.keys(st.base).length) st.base = {};   // banco local vacío: nunca se interpreta como «borra todo en la nube»
+    let bankCh = false, idxCh = false, up = 0, down = 0, gone = 0;
+    const push = async (fid, l) => {
+      const ps = parts(l.qs);
+      for(let i = 0; i < ps.length; i++) await put(dir, `b_${fid}_${i}.json`, await sealT(ps[i], k));
+      for(const n of Object.keys(dir)){ const m = n.match(/^b_([0-9a-f]{16})_(\d+)\.json$/); if(m && m[1] === fid && +m[2] >= ps.length) await del(dir, n); }
+      idx.lotes[fid] = {name:l.name, h:l.h, parts:ps.length, n:l.qs.length, t:Date.now()}; delete idx.borrados[fid]; st.base[fid] = l.h; idxCh = true; up++;
+    };
+    const pull = async (fid, R) => {
+      let qs = []; for(let i = 0; i < R.parts; i++) qs = qs.concat(await openT(`b_${fid}_${i}.json`, k));
+      S.imported = S.imported.filter(q=>loteOf(q) !== R.name).concat(qs); st.base[fid] = R.h; bankCh = true; down++;
+    };
+    const remoteDel = async fid => { for(const n of Object.keys(dir)) if(n.startsWith(`b_${fid}_`)) await del(dir, n); delete idx.lotes[fid]; idx.borrados[fid] = Date.now(); delete st.base[fid]; idxCh = true; gone++; };
+    for(const fid of new Set([...Object.keys(L), ...Object.keys(idx.lotes), ...Object.keys(st.base)])){
+      const l = L[fid], R = idx.lotes[fid], B = st.base[fid];
+      if(l && R){
+        if(l.h === R.h){ st.base[fid] = l.h; continue; }
+        if(R.h === B) await push(fid, l);
+        else if(l.h === B) await pull(fid, R);
+        else { await pull(fid, R); const ids = new Set(l.qs.map(q=>q.id)); S.imported = S.imported.filter(q=>loteOf(q) !== l.name || !ids.has(q.id)).concat(l.qs); await push(fid, (await localLotes())[fid]); }
+      } else if(l){
+        if(B && B === l.h && idx.borrados[fid]){ S.imported = S.imported.filter(q=>loteOf(q) !== l.name); delete st.base[fid]; bankCh = true; gone++; }
+        else await push(fid, l);
+      } else if(R){
+        if(B && R.h === B) await remoteDel(fid); else await pull(fid, R);
+      } else delete st.base[fid];
+    }
+    // progreso
+    const rp = dir["progreso.json"] ? await openT("progreso.json", k) : null;
+    const progCh = rp ? mergeProg(rp) > 0 : false;
+    let progUp = false;
+    if(!rp || progSig(rp) !== progSig(S.prog)){ await put(dir, "progreso.json", await sealT(S.prog, k)); progUp = true; }
+    if(idxCh) await put(dir, "indice.json", await sealT(idx, k));
+    if(bankCh) rebuildIndex();
+    if(bankCh || progCh) await persist({bank:bankCh});
+    st.last = Date.now(); await Store.set("sync_state", st);
+    if((bankCh || progCh) && ["home","stats","bank","review","new"].includes(S.view)) go(S.view);
+    const bits = [];
+    if(up) bits.push(`${up} lote${up>1?"s":""} subido${up>1?"s":""}`);
+    if(down) bits.push(`${down} lote${down>1?"s":""} descargado${down>1?"s":""}`);
+    if(gone) bits.push(`${gone} lote${gone>1?"s":""} borrado${gone>1?"s":""}`);
+    if(progCh) bits.push("progreso de otro dispositivo añadido");
+    if(progUp) bits.push("progreso subido");
+    return bits.length ? bits.join(" · ") : "todo al día";
+  }
+  function setStatus(ok, msg){
+    status.ok = ok; status.msg = msg; if(ok !== null) status.t = Date.now();
+    const c = $("#st-store"); if(c && cfg() && cfg().on){ c.textContent = ok === null ? "SYNC …" : ok ? "SYNC ✓" : "SYNC !"; c.title = msg; }
+    const s = $("#sy-st"); if(s) s.innerHTML = statusHTML();
+  }
+  function statusHTML(){
+    if(!status.msg) return "Aún no se ha sincronizado en esta sesión.";
+    const when = status.t ? new Date(status.t).toLocaleTimeString("es-ES", {hour:"2-digit", minute:"2-digit"}) : "";
+    return status.ok === null ? `<span class="sel">Sincronizando…</span>` : status.ok ? `<span class="ok">✓ ${when}</span> · ${esc(status.msg)}` : `<span class="ko">✗ ${when}</span> · ${esc(status.msg)}`;
+  }
+  async function run(manual){
+    if(!ready()){ if(manual) toast("La sincronización no está activada", true); return false; }
+    if(S.test && !S.test.ended){ soon(60000); return false; }
+    if(running) return running;
+    running = (async () => {
+      setStatus(null, "sincronizando…");
+      for(let i = 0; i < 2; i++){
+        try{ const msg = await once(); setStatus(true, msg); if(manual) toast("Sincronizado: " + msg); return true; }
+        catch(e){
+          if((e.status === 409 || e.status === 422) && i === 0) continue;
+          setStatus(false, e.message || String(e)); if(manual) toast("Sincronización: " + (e.message || e), true);
+          if(e.net) soon(120000);
+          return false;
+        }
+      }
+      return false;
+    })().finally(() => { running = null; });
+    return running;
+  }
+  function soon(ms){ if(!ready()) return; clearTimeout(soonT); soonT = setTimeout(() => run(false), ms == null ? 2500 : ms); }
+  async function load(){
+    SEC = null; keyC = null;
+    if(S.set.lock && S.vault.key){
+      const b = await Store.get("vault_sync");
+      if(b){ try{ SEC = await Crypt.open(b, S.vault.key); }catch(e){ SEC = null; } }
+      else { SEC = await Store.get("sync_sec"); if(SEC) await saveSec(); }
+    } else if(!S.set.lock) SEC = await Store.get("sync_sec");
+    const c = $("#st-store"); if(c && cfg() && cfg().on && SEC){ c.textContent = "SYNC"; c.title = "Sincronización activada"; }
+  }
+  async function saveSec(){
+    if(S.set.lock && S.vault.key){ if(SEC) await Store.set("vault_sync", await Crypt.seal(SEC, S.vault.key, S.vault.salt)); else await Store.del("vault_sync"); await Store.del("sync_sec"); }
+    else if(!S.set.lock){ if(SEC) await Store.set("sync_sec", SEC); else await Store.del("sync_sec"); await Store.del("vault_sync"); }
+  }
+  async function activate(repo, token, pass){
+    const prev = {set:S.set.sync, sec:SEC};
+    S.set.sync = {repo, on:true}; SEC = {token, pass}; keyC = null;
+    await Store.del("sync_state");
+    const ok = await run(false);
+    if(!ok){ S.set.sync = prev.set; SEC = prev.sec; const c = $("#st-store"); if(c && !(prev.set && prev.set.on)){ c.textContent = "LOCAL"; c.title = ""; } return {ok:false, msg:status.msg}; }
+    await saveSettings(); await saveSec();
+    return {ok:true, msg:status.msg};
+  }
+  async function disable(){ S.set.sync = null; SEC = null; keyC = null; status.ok = null; status.msg = ""; await saveSettings(); await saveSec(); await Store.del("sync_state"); const c = $("#st-store"); if(c){ c.textContent = "LOCAL"; c.title = ""; } }
+  function forget(){ SEC = null; keyC = null; clearTimeout(soonT); }
+  const on = () => !!(cfg() && cfg().on && SEC);
+  return {run, soon, load, saveSec, activate, disable, forget, on, statusHTML, get last(){ return status.t; }, get repo(){ return cfg() ? cfg().repo : ""; }};
+})();
+
+/* une el progreso de otro dispositivo (tests por id; por pregunta gana lo más reciente; marcas por fecha) */
+function mergeProg(P){
+  let n = 0;
+  const ids = new Set(S.prog.attempts.map(a=>a.id));
+  for(const a of (P.attempts || [])) if(!ids.has(a.id)){ S.prog.attempts.push(a); n++; }
+  S.prog.attempts.sort((a,b)=>a.fecha-b.fecha);
+  for(const [id,s] of Object.entries(P.q || {})){ const m = S.prog.q[id]; if(!m || (s.last||0) > (m.last||0)){ S.prog.q[id] = s; n++; } }
+  for(const [id,f] of Object.entries(P.flags || {})){ const m = S.prog.flags[id]; if(!m || (f.t||0) > (m.t||0)){ if(JSON.stringify(m) !== JSON.stringify(f)){ S.prog.flags[id] = f; n++; } } }
+  return n;
+}
 
 /* ---------------- validación e importación ---------------- */
 const VALID_MOD = Object.keys(MODS);
@@ -487,6 +695,7 @@ function normQ(raw, i, errs, warns){
   if(!VALID_MOD.includes(q.modulo)){ errs.push(where+": 'modulo' debe ser ingles, psicotecnicos o teoria"); return null; }
   if((typeof q.enunciado!=="string" || !q.enunciado.trim()) && !q.svg && !q.img){ errs.push(where+": falta 'enunciado'"); return null; }
   if(q.img && !safeImg(q.img)){ warns.push(where+": 'img' debe ser una imagen incrustada (data:image/…;base64); se ignora"); delete q.img; }
+  if(q.img_sol && !safeImg(q.img_sol)){ warns.push(where+": 'img_sol' debe ser una imagen incrustada (data:image/…;base64); se ignora"); delete q.img_sol; }
   if(q.clave_academia && !q.clave_original) q.clave_original = q.clave_academia; delete q.clave_academia;
   if(!Array.isArray(q.opciones) || q.opciones.length<2 || q.opciones.length>6){ errs.push(where+": 'opciones' debe tener entre 2 y 6 elementos"); return null; }
   for(const o of q.opciones){ if(!(typeof o==="string" || (o && typeof o==="object" && (o.texto||o.svg||(o.img&&safeImg(o.img)))))){ errs.push(where+": opción no válida"); return null; } }
@@ -514,7 +723,7 @@ async function importQs(qs){
     if(idx.has(q.id)){ S.imported[idx.get(q.id)] = q; act++; }
     else { if(S.builtin.some(b=>b.id===q.id)) sobre++; S.imported.push(q); idx.set(q.id, S.imported.length-1); nuevas++; }
   }
-  rebuildIndex(); await persist();
+  rebuildIndex(); await persist({bank:true}); Sync.soon();
   return {nuevas, act, sobre};
 }
 
@@ -559,12 +768,13 @@ function curItem(){ return S.test.items[S.test.cur]; }
 function trackTime(){ const T=S.test; if(!T || T.hiddenAt) return; const it=T.items[T.cur]; const now=Date.now(); it.t += Math.max(0, now-T.qStart); T.qStart=now; }
 function snapOf(q){ // copia de la pregunta para el historial; las imágenes se referencian (se recuperan del banco al revisar)
   const opciones = q.opciones.map(o => (o && typeof o==="object" && o.img) ? {texto:o.texto, svg:o.svg, imgRef:true} : o);
-  return {enunciado:q.enunciado, contexto:q.contexto, svg:q.svg, imgRef:q.img?true:undefined, opciones, correcta:q.correcta, explicacion:q.explicacion, descartes:q.descartes, tema:q.tema, origen:q.origen, fuente:q.fuente, revision:q.revision, nota_revision:q.nota_revision, nivel:q.nivel, clave_original:q.clave_original};
+  return {enunciado:q.enunciado, contexto:q.contexto, svg:q.svg, imgRef:q.img?true:undefined, imgSolRef:q.img_sol?true:undefined, opciones, correcta:q.correcta, explicacion:q.explicacion, descartes:q.descartes, tema:q.tema, origen:q.origen, fuente:q.fuente, revision:q.revision, nota_revision:q.nota_revision, nivel:q.nivel, clave_original:q.clave_original};
 }
 function hydrate(id, snap){
-  if(!snap.imgRef && !snap.opciones.some(o=>o && o.imgRef)) return snap;
+  if(!snap.imgRef && !snap.imgSolRef && !snap.opciones.some(o=>o && o.imgRef)) return snap;
   const live = S.byId.get(id);
   return {...snap, img: snap.imgRef && live ? live.img : undefined, imgRef: snap.imgRef && !(live && live.img),
+    img_sol: snap.imgSolRef && live ? live.img_sol : undefined,
     opciones: snap.opciones.map((o,i)=> o && o.imgRef ? (live && live.opciones[i] && live.opciones[i].img ? {...o, img:live.opciones[i].img, imgRef:false} : o) : o)};
 }
 function scoreItems(items, penal){
@@ -594,7 +804,7 @@ async function finishTest(reason){
   S.prog.attempts.push(att);
   await persist(); await Store.del("cur");
   document.body.classList.remove("in-test");
-  S.lastResultId = att.id; S.test = null;
+  S.lastResultId = att.id; S.test = null; Sync.soon(1500);
   if(reason==="tiempo") toast("Tiempo agotado: test finalizado");
   go("result");
 }
@@ -768,7 +978,7 @@ function vTest(el){
     ${q.contexto?`<div class="qctx">${fmtRich(q.contexto)}</div>`:""}
     ${q.svg?`<div class="qsvg">${safeSVG(q.svg)}</div>`:""}${figHTML(q)}
     <div class="qstem">${fmtRich(q.enunciado||"")}</div>
-    <div class="opts ${hasFigOpts(q)?"figs":""}" role="group" aria-label="Opciones">
+    <div class="opts ${optsClass(q)}" role="group" aria-label="Opciones">
       ${it.perm.map((oi,pos)=>{ let cls=""; if(shown){ if(oi===q.correcta) cls="is-ok"; else if(it.ans===oi) cls="is-ko"; }
         return `<button class="opt ${cls}" type="button" data-oi="${oi}" aria-pressed="${it.ans===oi}" ${shown?"disabled":""}><span class="k">${LETTERS[pos]}</span>${renderOpt(q.opciones[oi])}</button>`; }).join("")}
     </div>
@@ -800,6 +1010,21 @@ function wireSwipe(card){ // deslizar a la izquierda = siguiente, a la derecha =
     if(Date.now()-t0>700 || Math.abs(dx)<70 || Math.abs(dy)>Math.abs(dx)*0.6) return;
     moveTo(S.test.cur + (dx<0?1:-1)); }, {passive:true});
 }
+
+/* ---------------- figuras ampliables (móvil) ---------------- */
+function openZoom(src){
+  if(!src) return;
+  const z=document.createElement("div"); z.className="zoomer"; z.setAttribute("role","dialog"); z.setAttribute("aria-label","Figura ampliada");
+  z.innerHTML=`<div class="zbar"><span class="label">Figura ampliada</span><div class="row"><button class="btn sm" data-z="fit" type="button">Ajustar</button><button class="btn sm" data-z="big" type="button">Ampliar ×2</button><button class="btn sm primary" data-zc="1" type="button">Cerrar</button></div></div><div class="zbody"><img alt="Figura ampliada"></div>`;
+  const im=z.querySelector("img"); im.src=src;
+  const fit=()=>{ im.style.width="100%"; im.style.maxWidth="100%"; };
+  const big=()=>{ im.style.maxWidth="none"; im.style.width=Math.max(im.naturalWidth, 2*z.querySelector(".zbody").clientWidth)+"px"; };
+  fit();
+  z.addEventListener("click", ev=>{ const b=ev.target.closest("button"); if(!b) return; if(b.dataset.zc) z.remove(); else if(b.dataset.z==="fit") fit(); else big(); });
+  document.body.appendChild(z); z.querySelector("[data-zc]").focus();
+}
+document.addEventListener("click", e=>{ const img=e.target.closest(".qimg img"); if(img){ e.preventDefault(); openZoom(img.getAttribute("src")); } });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ const z=$(".zoomer"); if(z){ z.remove(); e.stopPropagation(); } } }, true);
 
 /* ---------------- test en curso: se guarda en cada cambio (iOS puede cerrar la app en segundo plano) ---------------- */
 let curSaveT = null;
@@ -835,6 +1060,8 @@ async function discardTest(){
   const T=S.test; if(!T) return; T.ended=true; clearInterval(timerH); S.test=null; await Store.del("cur");
   document.body.classList.remove("in-test"); toast("Test descartado (no cuenta en el historial)"); go("home");
 }
+document.addEventListener("visibilitychange", () => { if(document.visibilityState==="visible" && Sync.on() && Date.now()-Sync.last > 5*60*1000) Sync.soon(1000); });
+window.addEventListener("online", () => { if(Sync.on()) Sync.soon(1500); });
 document.addEventListener("visibilitychange", () => { // el cronómetro se pausa mientras la app está en segundo plano
   const T = S.test; if(!T || T.ended) return;
   if(document.visibilityState === "hidden"){ if(!T.hiddenAt){ trackTime(); T.hiddenAt = Date.now(); } saveCur(); }
@@ -872,7 +1099,9 @@ function explBlock(q, ans, perm){
   const order = perm || q.opciones.map((_,i)=>i);
   const items = order.map((oi,pos)=>{ const c=oi===q.correcta, w=ans===oi && !c; const why = q.descartes && q.descartes[oi] && !c ? `<span class="why">${fmtRich(q.descartes[oi])}</span>` : "";
     return `<li class="${c?"c":w?"w":""}"><b class="k ${c?"ok":w?"ko":"dim"}">${LETTERS[pos]}</b><span>${renderOpt(q.opciones[oi])}${c?' <span class="ok mono" style="font-size:var(--fs-xs)">✓ CORRECTA</span>':""}${w?' <span class="ko mono" style="font-size:var(--fs-xs)">✗ TU RESPUESTA</span>':""}</span>${why}</li>`; }).join("");
+  const solImg = q.img_sol && safeImg(q.img_sol);
   return `<ul class="ol">${items}</ul>${q.explicacion?`<div class="expl">${fmtRich(q.explicacion)}</div>`:`<div class="dim">Sin explicación en el banco.</div>`}
+    ${solImg?`<div class="qimg sol"><img src="${solImg}" alt="Figura de la explicación"></div>`:""}
     ${(()=>{ const ck=q.clave_original||q.clave_academia; if(!ck) return ""; const ai="ABCDEF".indexOf(ck); if(ai<0||ai===q.correcta) return ""; const pos=order.indexOf(ai); return `<div class="dim" style="font-size:var(--fs-xs)">La clave del material original marcaba <b class="warn">${LETTERS[pos]}</b> (${esc(typeof q.opciones[ai]==="string"?q.opciones[ai]:"figura")}).</div>`; })()}
     ${q.revision==="dudosa"?`<div class="note-dudosa"><b>Pregunta marcada como dudosa.</b> ${fmtRich(q.nota_revision||"")}</div>`:""}
     <div class="dim" style="font-size:var(--fs-xs)">${q.origen==="archivo"?"De tus archivos":"Generada"}${q.fuente?" · "+esc(q.fuente):""}${q.nivel?" · "+esc(q.nivel):""}</div>`;
@@ -917,7 +1146,7 @@ function vResult(el){
   $("#rf",el).onclick=e=>{ const b=e.target.closest("button[data-v]"); if(!b) return; vResult._f=b.dataset.v; vResult(el); };
   $("#r-again",el).onclick=()=>startTest({...a.cfg, modo:"normal"});
   const rf=$("#r-fails",el); if(rf) rf.onclick=()=>{ const ids=a.items.filter(it=>it.ans!==it.snap.correcta).map(it=>it.id).filter(id=>S.byId.has(id)); startCustom(a.cfg, ids); };
-  $$("[data-flagq]",el).forEach(b=>b.onclick=async()=>{ const id=b.dataset.flagq; const f=S.prog.flags[id]||{}; f.dudosa=!f.dudosa; S.prog.flags[id]=f; await persist(); toast(f.dudosa?"Marcada como dudosa (se excluye de los tests salvo que la incluyas)":"Marca quitada"); vResult(el); });
+  $$("[data-flagq]",el).forEach(b=>b.onclick=async()=>{ const id=b.dataset.flagq; const f=S.prog.flags[id]||{}; f.dudosa=!f.dudosa; f.t=Date.now(); S.prog.flags[id]=f; await persist(); Sync.soon(8000); toast(f.dudosa?"Marcada como dudosa (se excluye de los tests salvo que la incluyas)":"Marca quitada"); vResult(el); });
   wireCommon(el);
 }
 function startCustom(cfg, ids){
@@ -1013,6 +1242,8 @@ function vBank(el){
   "enunciado": "___, we would have chosen…",
   "contexto": "texto largo opcional",
   "svg": "&lt;svg …&gt;…&lt;/svg&gt;", <span class="dim">// opcional (psicotécnicos)</span>
+  "img": "data:image/png;base64,…",  <span class="dim">// opcional: figura del enunciado</span>
+  "img_sol": "data:image/png;base64,…", <span class="dim">// opcional: figura de la explicación</span>
   "opciones": ["…","…","…","…"],     <span class="dim">// texto o {"svg":"…"}</span>
   "correcta": 1,                   <span class="dim">// 0 = A, 1 = B…</span>
   "explicacion": "Por qué es correcta…",
@@ -1037,17 +1268,19 @@ function vBank(el){
   <div class="panel"><div class="panel-h"><h3>Explorar</h3><div class="row"><input class="input" id="bx-q" placeholder="Buscar texto, tema o id" style="min-width:0;width:240px" value="${esc(vBank._q||"")}"><select class="input" id="bx-m" style="width:auto">${[["","Todos"],...Object.entries(MODS).map(([k,m])=>[k,m.name])].map(([v,l])=>`<option value="${v}" ${vBank._m===v?"selected":""}>${l}</option>`).join("")}</select><select class="input" id="bx-f" style="width:auto">${[["","Todas"],["dudosa","Dudosas"],["archivo","De archivo"],["generada","Generadas"],["mal","Las que más fallo"]].map(([v,l])=>`<option value="${v}" ${vBank._f===v?"selected":""}>${l}</option>`).join("")}</select></div></div>
     <div id="bx-list" class="stack"></div></div>`;
   // importar
-  const rep=$("#imp-rep",el); let pending=null;
-  const doVal = async () => { const txt=$("#imp-text",el).value.trim(); if(!txt){ rep.innerHTML=`<div class="dim">Pega un JSON o carga un archivo.</div>`; return null; }
+  const rep=$("#imp-rep",el); let fileText=null, fileName="";
+  const doVal = async () => { const txt=(fileText!=null ? fileText : $("#imp-text",el).value).trim(); if(!txt){ rep.innerHTML=`<div class="dim">Pega un JSON o carga un archivo.</div>`; return null; }
     let r=parseBank(txt);
     if(r.encrypted){ const pass = await askPass("Este archivo está cifrado. Contraseña:"); if(pass==null) return null; try{ const k=await Crypt.key(pass, Crypt.unb64(r.data.salt)); const obj=await Crypt.open(r.data,k); r=parseBank(JSON.stringify(obj.imported? {preguntas:obj.imported}: obj)); }catch(e){ rep.innerHTML=`<div class="ko">Contraseña incorrecta o archivo dañado.</div>`; return null; } }
     rep.innerHTML = `<div class="stack"><div class="${r.ok?"ok":"ko"}">${r.qs.length} preguntas válidas${r.errs.length?` · ${r.errs.length} con errores (no se importan)`:""}${r.warns.length?` · ${r.warns.length} avisos`:""}</div>
       ${r.errs.length?`<pre class="code ko">${esc(r.errs.slice(0,30).join("\n"))}${r.errs.length>30?"\n…":""}</pre>`:""}${r.warns.length?`<details><summary class="label warn" style="cursor:pointer">Ver avisos</summary><pre class="code">${esc(r.warns.slice(0,60).join("\n"))}</pre></details>`:""}</div>`;
     return r; };
-  $("#imp-file",el).onchange=e=>{ const f=e.target.files[0]; if(!f) return; const rd=new FileReader(); rd.onload=()=>{ $("#imp-text",el).value=rd.result; doVal(); }; rd.readAsText(f); };
+  // el archivo no se vuelca en el cuadro de texto: con bancos de varios MB el móvil se atasca
+  $("#imp-file",el).onchange=e=>{ const f=e.target.files[0]; if(!f) return; fileName=f.name; rep.innerHTML=`<div class="dim">Leyendo ${esc(f.name)}…</div>`; const rd=new FileReader(); rd.onload=()=>{ fileText=rd.result; $("#imp-text",el).value=""; $("#imp-text",el).placeholder=`Archivo cargado: ${f.name} (${Math.round(f.size/1024)} KB)`; doVal(); }; rd.onerror=()=>{ rep.innerHTML=`<div class="ko">No se pudo leer el archivo.</div>`; }; rd.readAsText(f); };
+  $("#imp-text",el).oninput=()=>{ fileText=null; };
   $("#imp-val",el).onclick=doVal;
-  $("#imp-go",el).onclick=async()=>{ const r=await doVal(); if(!r||!r.ok) return; const res=await importQs(r.qs); toast(`Importado: ${res.nuevas} nuevas, ${res.act} actualizadas`); $("#imp-text",el).value=""; vBank(el); $("#imp-rep").innerHTML=`<div class="ok">Importado: ${res.nuevas} nuevas · ${res.act} actualizadas${res.sobre?` · ${res.sobre} sustituyen a integradas`:""}.</div>`; };
-  $$("[data-dellote]",el).forEach(b=>b.onclick=async()=>{ const l=b.dataset.dellote; const n=S.imported.filter(q=>(q.lote||"sin lote")===l).length; if(!await confirmBox("Eliminar lote", `Se eliminarán ${n} preguntas del lote <b>${esc(l)}</b>. Tu historial de tests se conserva.`, "Eliminar", true)) return; S.imported=S.imported.filter(q=>(q.lote||"sin lote")!==l); rebuildIndex(); await persist(); toast("Lote eliminado"); vBank(el); });
+  $("#imp-go",el).onclick=async()=>{ const r=await doVal(); if(!r||!r.ok) return; const res=await importQs(r.qs); toast(`Importado: ${res.nuevas} nuevas, ${res.act} actualizadas`); fileText=null; $("#imp-text",el).value=""; vBank(el); $("#imp-rep").innerHTML=`<div class="ok">Importado: ${res.nuevas} nuevas · ${res.act} actualizadas${res.sobre?` · ${res.sobre} sustituyen a integradas`:""}.</div>`; };
+  $$("[data-dellote]",el).forEach(b=>b.onclick=async()=>{ const l=b.dataset.dellote; const n=S.imported.filter(q=>(q.lote||"sin lote")===l).length; if(!await confirmBox("Eliminar lote", `Se eliminarán ${n} preguntas del lote <b>${esc(l)}</b>. Tu historial de tests se conserva.`, "Eliminar", true)) return; S.imported=S.imported.filter(q=>(q.lote||"sin lote")!==l); rebuildIndex(); await persist({bank:true}); Sync.soon(); toast("Lote eliminado"); vBank(el); });
   // exportar
   const stamp=()=>new Date().toISOString().slice(0,10);
   $("#ex-imp",el).onclick=()=>download(`banco_importado_${stamp()}.json`, JSON.stringify({formato:"atc-banco", version:1, fecha:stamp(), preguntas:S.imported}, null, 1));
@@ -1097,6 +1330,18 @@ async function vSettings(el){
     <div class="row">${S.set.lock?`<span class="chip ok">Activada</span><button class="btn" id="pw-change" type="button">Cambiar</button><button class="btn danger" id="pw-off" type="button">Desactivar</button><button class="btn amber" id="pw-lock" type="button">Bloquear ahora</button>`:`<span class="chip">Desactivada</span><button class="btn primary" id="pw-on" type="button">Activar contraseña</button>`}</div>`
     :`<p class="read warn" style="margin:0">Este navegador no permite cifrado en este contexto (abre la app desde un archivo local o una URL https).</p>`}
   </div>
+  <div class="panel stack"><h3>Sincronización entre dispositivos</h3>
+    ${!cryptoOK?`<p class="read warn" style="margin:0">Este navegador no permite cifrado en este contexto: la sincronización necesita abrir la app desde su web https.</p>`
+    : Sync.on()?`<p class="read muted" style="margin:0">Repositorio privado <b>${esc(Sync.repo)}</b>. El banco importado, el progreso y el historial viajan <b>cifrados</b> con tu contraseña de sincronización. Se sincroniza al abrir la app, al terminar cada test y al importar o borrar material.</p>
+    <div class="row"><span class="chip ok">Activada</span><button class="btn primary" id="sy-now" type="button">Sincronizar ahora</button><button class="btn danger" id="sy-off" type="button">Desactivar</button></div>
+    <div id="sy-st" class="dim" style="font-size:var(--fs-s)">${Sync.statusHTML()}</div>`
+    :`<p class="read muted" style="margin:0">Mantén igual el banco, el progreso y el historial en el ordenador y en el móvil a través de un repositorio <b>privado</b> tuyo de GitHub. Todo se cifra en este dispositivo antes de subirlo.</p>
+    <label class="field"><span class="label">Repositorio (usuario/nombre)</span><input class="input" id="sy-repo" placeholder="tuusuario/atc-datos" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span class="label">Token de GitHub</span><input class="input" id="sy-tok" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span class="label">Contraseña de sincronización</span><input class="input" id="sy-pass" type="password" placeholder="la misma en todos tus dispositivos" autocomplete="new-password"></label>
+    <div class="row"><button class="btn primary" id="sy-on" type="button">Activar y sincronizar</button></div>
+    <div id="sy-st" class="dim" style="font-size:var(--fs-s)"></div>`}
+  </div>
   <div class="panel stack"><h3>Copia de seguridad</h3>
     <p class="read muted" style="margin:0">Una sola copia con banco importado, progreso, historial y ajustes. Úsala para pasar a otro ordenador o al móvil: exporta aquí, abre la app allí e importa.</p>
     <div class="row"><button class="btn primary" id="bk-ex" type="button">Exportar copia</button>${cryptoOK?`<button class="btn" id="bk-exc" type="button">Exportar copia cifrada</button>`:""}</div>
@@ -1116,31 +1361,43 @@ async function vSettings(el){
   $$("[data-set]",el).forEach(g=>g.onclick=async e=>{ const b=e.target.closest("button[data-v]"); if(!b) return; S.set[g.dataset.set]=Number(b.dataset.v); await saveSettings(); draftCfg=null; vSettings(el); });
   $("#st-shuf",el).onchange=async e=>{ S.set.shuffle=e.target.checked; await saveSettings(); draftCfg=null; };
   $("#st-dud",el).onchange=async e=>{ S.set.dudosas=e.target.checked; await saveSettings(); draftCfg=null; };
-  const on=$("#pw-on",el); if(on) on.onclick=async()=>{ const p=await askPass("Nueva contraseña", true); if(!p) return; S.vault.salt=Crypt.newSalt(); S.vault.key=await Crypt.key(p, S.vault.salt); S.set.lock=true; await saveSettings(); await persist(); toast("Contraseña activada: datos cifrados"); vSettings(el); };
-  const ch=$("#pw-change",el); if(ch) ch.onclick=async()=>{ const p=await askPass("Nueva contraseña", true); if(!p) return; S.vault.salt=Crypt.newSalt(); S.vault.key=await Crypt.key(p, S.vault.salt); await persist(); toast("Contraseña cambiada"); };
-  const off=$("#pw-off",el); if(off) off.onclick=async()=>{ if(!await confirmBox("Desactivar contraseña","Tus datos volverán a guardarse sin cifrar en este navegador.","Desactivar",true)) return; S.set.lock=false; S.vault={key:null,salt:null}; await saveSettings(); await Store.del("vault"); await persist(); toast("Contraseña desactivada"); vSettings(el); };
+  const on=$("#pw-on",el); if(on) on.onclick=async()=>{ const p=await askPass("Nueva contraseña", true); if(!p) return; S.vault.salt=Crypt.newSalt(); S.vault.key=await Crypt.key(p, S.vault.salt); S.set.lock=true; await saveSettings(); await persist({bank:true}); toast("Contraseña activada: datos cifrados"); vSettings(el); };
+  const ch=$("#pw-change",el); if(ch) ch.onclick=async()=>{ const p=await askPass("Nueva contraseña", true); if(!p) return; S.vault.salt=Crypt.newSalt(); S.vault.key=await Crypt.key(p, S.vault.salt); await persist({bank:true}); toast("Contraseña cambiada"); };
+  const off=$("#pw-off",el); if(off) off.onclick=async()=>{ if(!await confirmBox("Desactivar contraseña","Tus datos volverán a guardarse sin cifrar en este navegador.","Desactivar",true)) return; S.set.lock=false; S.vault={key:null,salt:null}; await saveSettings(); for(const k of VAULT_KEYS) await Store.del(k); await persist({bank:true}); toast("Contraseña desactivada"); vSettings(el); };
   const lk=$("#pw-lock",el); if(lk) lk.onclick=lockNow;
   const stamp=()=>new Date().toISOString().slice(0,10);
   const full=()=>({formato:"atc-copia", version:1, fecha:Date.now(), imported:S.imported, prog:S.prog, settings:{...S.set, lock:false}});
   $("#bk-ex",el).onclick=()=>download(`copia_app_atc_${stamp()}.json`, JSON.stringify(full()));
   const exc=$("#bk-exc",el); if(exc) exc.onclick=async()=>{ const p=await askPass("Contraseña para esta copia", true); if(!p) return; const salt=Crypt.newSalt(); const k=await Crypt.key(p,salt); const box=await Crypt.seal(full(), k, salt); download(`copia_app_atc_cifrada_${stamp()}.json`, JSON.stringify(box)); };
   const readBk = () => new Promise((res)=>{ const f=$("#bk-file",el).files[0]; if(!f){ toast("Elige primero el archivo de copia", true); return res(null); } const rd=new FileReader(); rd.onload=async()=>{ try{ let d=JSON.parse(rd.result); if(d.formato==="atc-cifrado"){ const p=await askPass("Contraseña de la copia"); if(!p) return res(null); const k=await Crypt.key(p, Crypt.unb64(d.salt)); d=await Crypt.open(d,k); } if(d.formato!=="atc-copia") throw new Error("No es una copia de APP ATC"); res(d); }catch(e){ toast("No se pudo leer la copia: "+(e.message||"contraseña incorrecta"), true); res(null); } }; rd.readAsText(f); });
-  $("#bk-merge",el).onclick=async()=>{ const d=await readBk(); if(!d) return; const r=await importQs(d.imported||[]); const P=d.prog||defaultsProg(); const ids=new Set(S.prog.attempts.map(a=>a.id)); let na=0; for(const a of P.attempts||[]) if(!ids.has(a.id)){ S.prog.attempts.push(a); na++; } S.prog.attempts.sort((a,b)=>a.fecha-b.fecha);
-    for(const [id,s] of Object.entries(P.q||{})){ const m=S.prog.q[id]; if(!m || (s.last||0)>(m.last||0)) S.prog.q[id]=s; } Object.assign(S.prog.flags, P.flags||{}); await persist(); $("#bk-rep",el).textContent=`Fusionado: ${r.nuevas} preguntas nuevas, ${r.act} actualizadas, ${na} tests añadidos.`; toast("Copia fusionada"); };
-  $("#bk-repl",el).onclick=async()=>{ const d=await readBk(); if(!d) return; if(!await confirmBox("Reemplazar todo","Se sustituirán tu banco importado y tu progreso de este navegador por los de la copia.","Reemplazar",true)) return; S.imported=d.imported||[]; S.prog=d.prog||defaultsProg(); rebuildIndex(); await persist(); toast("Copia restaurada"); vSettings(el); };
+  $("#bk-merge",el).onclick=async()=>{ const d=await readBk(); if(!d) return; const r=await importQs(d.imported||[]); const na0=S.prog.attempts.length; mergeProg(d.prog||defaultsProg()); const na=S.prog.attempts.length-na0; await persist({bank:true}); Sync.soon(); $("#bk-rep",el).textContent=`Fusionado: ${r.nuevas} preguntas nuevas, ${r.act} actualizadas, ${na} tests añadidos.`; toast("Copia fusionada"); };
+  $("#bk-repl",el).onclick=async()=>{ const d=await readBk(); if(!d) return; if(!await confirmBox("Reemplazar todo","Se sustituirán tu banco importado y tu progreso de este navegador por los de la copia.","Reemplazar",true)) return; S.imported=d.imported||[]; S.prog=d.prog||defaultsProg(); rebuildIndex(); await persist({bank:true}); Sync.soon(); toast("Copia restaurada"); vSettings(el); };
+  const syOn=$("#sy-on",el); if(syOn) syOn.onclick=async()=>{
+    let repo=$("#sy-repo",el).value.trim().replace(/^https?:\/\/github\.com\//i,"").replace(/\.git$/,"").replace(/\/+$/,"");
+    const tok=$("#sy-tok",el).value.trim(), pass=$("#sy-pass",el).value;
+    const st=$("#sy-st",el);
+    if(!/^[\w.-]+\/[\w.-]+$/.test(repo)){ st.innerHTML=`<span class="ko">Escribe el repositorio como usuario/nombre (por ejemplo, javier/atc-datos).</span>`; return; }
+    if(tok.length<20){ st.innerHTML=`<span class="ko">Pega el token completo (empieza por github_pat_).</span>`; return; }
+    if(pass.length<6){ st.innerHTML=`<span class="ko">La contraseña de sincronización debe tener al menos 6 caracteres.</span>`; return; }
+    syOn.disabled=true; st.innerHTML=`<span class="sel">Conectando y sincronizando… (la primera vez, con todo el banco, puede tardar un poco)</span>`;
+    const r=await Sync.activate(repo, tok, pass);
+    if(r.ok){ toast("Sincronización activada"); vSettings(el); } else { syOn.disabled=false; st.innerHTML=`<span class="ko">No se pudo activar: ${esc(r.msg)}</span>`; }
+  };
+  const syNow=$("#sy-now",el); if(syNow) syNow.onclick=async()=>{ syNow.disabled=true; await Sync.run(true); syNow.disabled=false; const s=$("#sy-st",el); if(s) s.innerHTML=Sync.statusHTML(); };
+  const syOff=$("#sy-off",el); if(syOff) syOff.onclick=async()=>{ if(!await confirmBox("Desactivar sincronización","Este dispositivo dejará de sincronizarse y olvidará el token. Tus datos locales y los del repositorio no se borran.","Desactivar",true)) return; await Sync.disable(); toast("Sincronización desactivada"); vSettings(el); };
   const su=$("#st-upd",el); if(su) su.onclick=async()=>{ try{ await SWREG.update(); toast(SWREG.waiting||SWREG.installing?"Descargando versión nueva…":"Ya tienes la última versión"); }catch(e){ toast("Sin conexión: inténtalo luego", true); } };
   const sp=$("#st-persist",el); if(sp) sp.onclick=async()=>{ try{ const ok=await navigator.storage.persist(); toast(ok?"Almacenamiento persistente concedido":"El navegador no lo ha concedido (es normal en algunos)"); }catch(e){ toast("No disponible en este navegador", true); } vSettings(el); };
-  $("#st-wipe",el).onclick=async()=>{ if(!await confirmBox("Borrar todo","Se borrarán el banco importado, el progreso y los ajustes de este navegador. Las preguntas integradas se mantienen. No se puede deshacer.","Borrar todo",true)) return; await Store.del("imported"); await Store.del("prog"); await Store.del("vault"); await Store.del("settings"); S.imported=[]; S.prog=defaultsProg(); S.set={penal:1/3, shuffle:true, dudosas:false, readScale:1, lock:false}; S.vault={key:null,salt:null}; rebuildIndex(); applySettings(); toast("Datos borrados"); vSettings(el); };
+  $("#st-wipe",el).onclick=async()=>{ if(!await confirmBox("Borrar todo","Se borrarán el banco importado, el progreso y los ajustes de este navegador. Las preguntas integradas se mantienen. No se puede deshacer.","Borrar todo",true)) return; await Store.del("imported"); await Store.del("prog"); for(const k of VAULT_KEYS) await Store.del(k); await Store.del("settings"); S.imported=[]; S.prog=defaultsProg(); S.set={penal:1/3, shuffle:true, dudosas:false, readScale:1, lock:false}; S.vault={key:null,salt:null}; for(const k of ["sync_sec","vault_sync","sync_state"]) await Store.del(k); Sync.forget(); rebuildIndex(); applySettings(); toast("Datos borrados"); vSettings(el); };
 }
 
 /* ---------------- bloqueo ---------------- */
-function lockNow(){ S.vault.key=null; S.imported=[]; S.prog=defaultsProg(); rebuildIndex(); showLock(); }
+function lockNow(){ Sync.forget(); S.vault.key=null; S.imported=[]; S.prog=defaultsProg(); rebuildIndex(); showLock(); }
 function showLock(){
   const L=$("#lock"); L.hidden=false;
   L.innerHTML=`<div class="dialog"><span class="label warn">Acceso restringido</span><h2>APP ATC bloqueada</h2><p class="read muted" style="margin:0">Introduce tu contraseña para descifrar el banco y el progreso.</p><input type="password" class="input" id="lk-pw" autocomplete="current-password" placeholder="Contraseña"><div id="lk-err" class="ko" style="font-size:var(--fs-s)"></div><div class="row"><button class="btn primary" id="lk-ok" type="button">Desbloquear</button><button class="btn ghost" id="lk-forgot" type="button">He olvidado la contraseña</button></div></div>`;
-  const tryOpen=async()=>{ const p=$("#lk-pw").value; const box=await Store.get("vault"); if(!box){ L.hidden=true; return; } try{ const k=await Crypt.key(p, Crypt.unb64(box.salt)); const d=await Crypt.open(box,k); S.vault={key:k, salt:Crypt.unb64(box.salt)}; S.imported=d.imported||[]; S.prog=d.prog||defaultsProg(); rebuildIndex(); applySettings(); L.hidden=true; L.innerHTML=""; go("home"); offerResume(); }catch(e){ $("#lk-err").textContent="Contraseña incorrecta."; } };
+  const tryOpen=async()=>{ const p=$("#lk-pw").value; if(!await hasVault()){ L.hidden=true; return; } try{ const d=await openVault(p); if(!d) throw new Error("vacío"); S.vault={key:d.k, salt:d.salt}; S.imported=d.imported; S.prog=d.prog; rebuildIndex(); applySettings(); if(d.legacy) await persist({bank:true}); L.hidden=true; L.innerHTML=""; go("home"); offerResume(); await Sync.load(); Sync.soon(800); }catch(e){ $("#lk-err").textContent="Contraseña incorrecta."; } };
   $("#lk-ok").onclick=tryOpen; $("#lk-pw").onkeydown=e=>{ if(e.key==="Enter") tryOpen(); }; $("#lk-pw").focus();
-  $("#lk-forgot").onclick=async()=>{ $("#lk-err").innerHTML=`Sin la contraseña los datos cifrados no se pueden recuperar. <button class="btn sm danger" id="lk-wipe" type="button">Borrarlos y empezar de cero</button>`; $("#lk-wipe").onclick=async()=>{ await Store.del("vault"); S.set.lock=false; await saveSettings(); L.hidden=true; go("home"); }; };
+  $("#lk-forgot").onclick=async()=>{ $("#lk-err").innerHTML=`Sin la contraseña los datos cifrados no se pueden recuperar. <button class="btn sm danger" id="lk-wipe" type="button">Borrarlos y empezar de cero</button>`; $("#lk-wipe").onclick=async()=>{ for(const k of VAULT_KEYS) await Store.del(k); await Store.del("vault_sync"); S.set.lock=false; await saveSettings(); L.hidden=true; go("home"); }; };
 }
 
 /* ---------------- arranque ---------------- */
@@ -1154,12 +1411,13 @@ async function boot(){
   $$(".tab").forEach(t=>t.onclick=()=>{ if(t.dataset.go==="new") draftCfg=draftCfg||null; go(t.dataset.go); });
   $("#btn-lock").onclick=lockNow;
   utcClock(); setInterval(utcClock, 15000);
-  if(S.set.lock){ rebuildIndex(); go("home"); if(await Store.get("vault")) showLock(); else { S.set.lock=false; await saveSettings(); } return; }
+  if(S.set.lock){ rebuildIndex(); go("home"); if(await hasVault()) showLock(); else { S.set.lock=false; await saveSettings(); } return; }
   S.imported = (await Store.get("imported")) || [];
   S.prog = (await Store.get("prog")) || defaultsProg();
   rebuildIndex(); go("home");
   if(mode==="mem") toast("Este navegador no permite guardar datos: exporta una copia antes de cerrar", true);
   offerResume();
+  await Sync.load(); Sync.soon(1200);
 }
 /* ---------------- app instalable (PWA): funciona sin conexión y avisa de versiones nuevas ---------------- */
 let SWREG = null;
