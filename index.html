@@ -143,10 +143,10 @@ textarea.input{min-height:160px;font-family:var(--font-ui);font-size:var(--fs-s)
 }
 
 /* ---------- radar ---------- */
-.radar-wrap{position:relative;display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:20px;align-items:center}
+.radar-wrap{position:relative;display:grid;grid-template-columns:minmax(0,360px) minmax(0,1fr);gap:20px;align-items:center}
 @media (max-width:640px){.radar-wrap{grid-template-columns:1fr}}
-.radar{width:100%;max-width:340px;aspect-ratio:372/260;margin:0 auto;display:block}
-.sweep{transform-origin:130px 130px;animation:sweep 6s linear infinite}
+.radar{width:100%;max-width:360px;aspect-ratio:344/312;margin:0 auto;display:block}
+.sweep{transform-origin:150px 150px;animation:sweep 6s linear infinite}
 @keyframes sweep{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.sweep{animation:none}}
 
@@ -332,7 +332,7 @@ const BUILD = (() => {
   const ua = navigator.userAgent || "";
   const ios = /iP(hone|od|ad)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   let standalone = false; try{ standalone = window.navigator.standalone === true || matchMedia("(display-mode: standalone)").matches; }catch(e){}
-  return {pwa: true, id: "02a1ae83fb", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
+  return {pwa: true, id: "f949a64d7f", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
 })();
 const MODS = {
   ingles:        {cs:"ING", name:"Inglés",         cls:"ing"},
@@ -835,26 +835,64 @@ function modStats(mod){
   const seen = qs.filter(q=>S.prog.q[q.id]).length;
   return {total:qs.length, arch:qs.filter(q=>q.origen==="archivo").length, gen:qs.filter(q=>q.origen==="generada").length, dud:qs.filter(q=>q.revision==="dudosa").length, atts:atts.length, avg, seen, due:dueList(mod).length, pend:pendingFails(mod).length};
 }
-function radarSVG(){
-  // cada tema de inglés es un eco: ángulo fijo por tema, distancia al centro = % de fallo (más lejos = más débil)
-  const temas = temaStats("ingles").filter(t=>t.n>0);
-  const cx=130, cy=130, R=112;
-  const weakest = new Set(temas.slice(0,6).map(t=>t.tema)); // temaStats ya viene ordenado de peor a mejor
-  let blips = temas.map((t,i)=>{ const a = (i/temas.length)*Math.PI*2 - Math.PI/2; const r = 18 + (1-t.ok/t.n)*(R-24); const x=cx+Math.cos(a)*r, y=cy+Math.sin(a)*r; const col = t.ok/t.n>=.8?"var(--green)":t.ok/t.n>=.6?"var(--amber)":"var(--red)";
-    const right = x>=cx, lx = x+(right?8:-8), ly = Math.min(cy+R-4, Math.max(cy-R+10, y-6));
-    const label = weakest.has(t.tema) ? `<line x1="${x.toFixed(1)}" y1="${y.toFixed(1)}" x2="${lx.toFixed(1)}" y2="${(ly+2).toFixed(1)}" stroke="${col}" stroke-width="1"></line><text x="${(lx+(right?2:-2)).toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${right?"start":"end"}" fill="var(--fg)" font-size="7.5" font-family="B612 Mono, monospace">${esc(t.tema.split(" ")[0].toUpperCase().slice(0,12))} ${pct(t.ok,t.n)}%</text>` : "";
-    return `<g><title>${esc(t.tema)}: ${pct(t.ok,t.n)}% de acierto</title><rect x="${(x-3).toFixed(1)}" y="${(y-3).toFixed(1)}" width="6" height="6" fill="${col}"></rect>${label}</g>`; }).join("");
-  if(!temas.length) blips = `<text x="${cx}" y="${cy+44}" text-anchor="middle" fill="var(--muted)" font-size="9" font-family="B612 Mono, monospace">SIN ECOS · HAZ UN TEST</text>`;
-  return `<svg class="radar" viewBox="-56 0 372 260" role="img" aria-label="Radar de temas de inglés: cuanto más lejos del centro, más fallos">
+const RADAR_GROUPS = {
+  ingles:        [["GRAM","Gramática"],["VOCAB","Vocabulario"],["IDIOMS","Idioms y phrasal verbs"],["CONECT","Conectores y preposiciones"]],
+  psicotecnicos: [["VERBAL","Verbal"],["NUM","Numérico y series"],["ABSTR","Abstracto y lógico"],["ESPAC","Espacial"],["ATENC","Atención"]],
+  teoria:        [1,2,3,4,5,6,7,8,9].map(i=>["T"+i,"Tema "+i])
+};
+const RADAR_COL = {ingles:"var(--cyan)", psicotecnicos:"var(--amber)", teoria:"var(--green)"};
+function radarGroup(mod, tema){
+  const t=(tema||"").toLowerCase();
+  if(mod==="ingles") return /idiom|phrasal/.test(t)?2 : /conector|preposic/.test(t)?3 : /vocab|formaci|coloca|expresi/.test(t)?1 : 0;
+  if(mod==="psicotecnicos") return /atenci|fatiga|conteo|comparaci/.test(t)?4 : /espacial|cubo|pieza/.test(t)?3 : /verbal|ortograf|vocabul|sin[oó]nim/.test(t)?0 : /abstract|l[oó]gic/.test(t)?2 : 1;
+  if(mod==="teoria"){ const m=t.match(/^t\s?(\d)\b/)||t.match(/tema\s*(\d)/); return m && +m[1]>=1 && +m[1]<=9 ? +m[1]-1 : -1; }
+  return -1;
+}
+function radarData(){
+  const G=[];
+  for(const mod of ["ingles","psicotecnicos","teoria"]) RADAR_GROUPS[mod].forEach(([k,name])=>G.push({mod,k,name,temas:new Set(),total:0,n:0,ok:0}));
+  const idx={}; let o=0; for(const mod of ["ingles","psicotecnicos","teoria"]){ idx[mod]=o; o+=RADAR_GROUPS[mod].length; }
+  for(const q of allQ()){ const g=radarGroup(q.modulo,q.tema); if(g<0||idx[q.modulo]==null) continue; const G1=G[idx[q.modulo]+g]; G1.total++; G1.temas.add(q.tema); const s=S.prog.q[q.id]; if(s){ G1.n+=s.n; G1.ok+=s.ok; } }
+  return G;
+}
+function radarSVG(G){
+  // 18 ecos fijos: 4 bloques de inglés, 5 de psicotécnicos y los 9 temas de teoría. Ángulo fijo por bloque; distancia al centro = % de fallo (más lejos = peor).
+  G = G || radarData();
+  const cx=150, cy=150, R=104, r0=12, N=G.length, step=2*Math.PI/N;
+  const rad = acc => r0 + (1-acc)*(R-r0-6);
+  const ang = i => -Math.PI/2 + (i+.5)*step;
+  const P = (a,r)=>[cx+Math.cos(a)*r, cy+Math.sin(a)*r];
+  const f = v=>v.toFixed(1);
+  const mono = 'font-family="B612 Mono, monospace"';
+  // arcos de sector por módulo y divisores
+  let sect="", start=0;
+  for(const mod of ["ingles","psicotecnicos","teoria"]){
+    const cnt=G.filter(g=>g.mod===mod).length, a0=-Math.PI/2+start*step+.03, a1=-Math.PI/2+(start+cnt)*step-.03;
+    const [x0,y0]=P(a0,R+3), [x1,y1]=P(a1,R+3), [dx,dy]=P(-Math.PI/2+start*step,R);
+    sect += `<path d="M${f(x0)},${f(y0)} A${R+3},${R+3} 0 ${a1-a0>Math.PI?1:0},1 ${f(x1)},${f(y1)}" fill="none" stroke="${RADAR_COL[mod]}" stroke-width="2" opacity=".75"></path><line x1="${cx}" y1="${cy}" x2="${f(dx)}" y2="${f(dy)}" stroke="var(--line-2)"></line>`;
+    start+=cnt; }
+  const spokes = G.map((g,i)=>{ const [x,y]=P(ang(i),R); return `<line x1="${cx}" y1="${cy}" x2="${f(x)}" y2="${f(y)}" stroke="var(--line)" stroke-dasharray="1 4"></line>`; }).join("");
+  const blips = G.map((g,i)=>{
+    const a=ang(i), has=g.n>0, acc=has?g.ok/g.n:0, r=has?rad(acc):R-4, [x,y]=P(a,r);
+    const col = !has?"var(--dim)":acc>=.8?"var(--green)":acc>=.6?"var(--amber)":"var(--red)";
+    const [lx,ly]=P(a,R+12), c=Math.cos(a), anchor = c>.35?"start":c<-.35?"end":"middle", dy = Math.sin(a)>.5?7:Math.sin(a)<-.5?-4:2;
+    const tip = `${g.name}${g.mod==="teoria"&&g.temas.size?" · "+[...g.temas][0].replace(/^T\d+\s*·\s*/,""):""}: ${has?pct(g.ok,g.n)+"% de acierto ("+g.n+" respuestas)":"sin respuestas todavía"}`;
+    const mark = has ? `<rect x="${f(x-3)}" y="${f(y-3)}" width="6" height="6" fill="${col}"></rect>` : `<rect x="${f(x-2.5)}" y="${f(y-2.5)}" width="5" height="5" fill="none" stroke="var(--dim)"></rect>`;
+    return `<g><title>${esc(tip)}</title>${mark}<text x="${f(lx)}" y="${f(ly+dy)}" text-anchor="${anchor}" ${mono} font-size="7.5"><tspan fill="${RADAR_COL[g.mod]}">${g.k}</tspan>${has?`<tspan fill="var(--muted)"> ${pct(g.ok,g.n)}</tspan>`:""}</text></g>`; }).join("");
+  const rings = [.8,.6,.4,.2].map(v=>`<circle cx="${cx}" cy="${cy}" r="${f(rad(v))}" fill="none" stroke="var(--line)" stroke-dasharray="2 3"></circle><text x="${cx+3}" y="${f(cy-rad(v)-2)}" fill="var(--dim)" font-size="6.5" ${mono}>${v*100}%</text>`).join("");
+  return `<svg class="radar" viewBox="-22 -6 344 312" role="img" aria-label="Radar de progreso: 4 bloques de inglés, 5 de psicotécnicos y 9 temas de teoría; cuanto más lejos del centro, más fallos">
     <defs><radialGradient id="sw" cx="0" cy="0" r="1"><stop offset="0" stop-color="var(--green)" stop-opacity=".0"/><stop offset="1" stop-color="var(--green)" stop-opacity=".22"/></radialGradient></defs>
     <circle cx="${cx}" cy="${cy}" r="${R}" fill="var(--bg)" stroke="var(--line-2)"></circle>
-    ${[.25,.5,.75].map(f=>`<circle cx="${cx}" cy="${cy}" r="${(R*f).toFixed(1)}" fill="none" stroke="var(--line)" stroke-dasharray="2 3"></circle>`).join("")}
-    <line x1="${cx-R}" y1="${cy}" x2="${cx+R}" y2="${cy}" stroke="var(--line)"></line><line x1="${cx}" y1="${cy-R}" x2="${cx}" y2="${cy+R}" stroke="var(--line)"></line>
-    <g class="sweep"><path d="M${cx},${cy} L${cx},${cy-R} A${R},${R} 0 0,1 ${(cx+R*Math.sin(Math.PI/5)).toFixed(1)},${(cy-R*Math.cos(Math.PI/5)).toFixed(1)} Z" fill="url(#sw)"></path></g>
+    ${spokes}${rings}${sect}
+    <g><path d="M${cx},${cy} L${cx},${cy-R} A${R},${R} 0 0,1 ${f(cx+R*Math.sin(Math.PI/5))},${f(cy-R*Math.cos(Math.PI/5))} Z" fill="url(#sw)"></path>${reduceMotion()?"":`<animateTransform attributeName="transform" type="rotate" from="0 ${cx} ${cy}" to="360 ${cx} ${cy}" dur="6s" repeatCount="indefinite"/>`}</g>
     ${blips}
-    <text x="${cx+4}" y="${cy-R*.25+10}" fill="var(--dim)" font-size="7" font-family="B612 Mono, monospace">80%</text>
-    <text x="${cx+4}" y="${cy-R*.75+10}" fill="var(--dim)" font-size="7" font-family="B612 Mono, monospace">20%</text>
   </svg>`;
+}
+function reduceMotion(){ try{ return matchMedia("(prefers-reduced-motion: reduce)").matches; }catch(e){ return false; } }
+function radarPriorities(G){
+  const w = G.filter(g=>g.n>=5).sort((a,b)=>a.ok/a.n-b.ok/b.n).slice(0,3);
+  if(!w.length) return "";
+  return `<p class="read" style="margin:0;font-size:var(--fs-s)"><span class="label" style="display:inline">Prioridades</span> ${w.map(g=>`<span style="color:${RADAR_COL[g.mod]}">${esc(g.name)}</span> <span class="muted">${pct(g.ok,g.n)}%</span>`).join(" · ")}</p>`;
 }
 function vHome(el){
   const strips = Object.entries(MODS).map(([k,m])=>{
@@ -868,15 +906,17 @@ function vHome(el){
       <div class="acts">${s.total?`<button class="btn sm primary" data-quick="${k}" type="button">Test 20</button>`:`<button class="btn sm" data-go2="bank" type="button">Importar</button>`}${s.due?`<button class="btn sm amber" data-rev="${k}" type="button">Repasar</button>`:""}</div>
     </div>`; }).join("");
   const recent = S.prog.attempts.slice(-6).reverse();
+  const RG = radarData();
   el.innerHTML = `
   ${installHint()}
   <div class="panel">
     <div class="radar-wrap">
-      ${radarSVG()}
+      ${radarSVG(RG)}
       <div class="stack">
         <span class="label">Situación</span>
         <h2 style="font-size:var(--fs-xl)">${greetLine()}</h2>
-        <p class="read muted" style="margin:0;max-width:60ch">Cada eco del radar es un tema de inglés. Cuanto más lejos del centro, más lo fallas: esos son tus objetivos prioritarios.</p>
+        <p class="read muted" style="margin:0;max-width:60ch">Cada eco es un bloque: <span style="color:var(--cyan)">4 de inglés</span>, <span style="color:var(--amber)">5 de psicotécnicos</span> y <span style="color:var(--green)">los 9 temas de teoría</span>. Cuanto más lejos del centro, más lo fallas. Los cuadrados huecos del borde aún no tienen respuestas.</p>
+        ${radarPriorities(RG)}
         <div class="row"><button class="btn primary" data-go2="new" type="button">Nuevo test</button>${dueList().length?`<button class="btn amber" data-go2="review" type="button">Repaso pendiente · ${dueList().length}</button>`:""}</div>
       </div>
     </div>
