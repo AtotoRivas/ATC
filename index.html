@@ -440,12 +440,12 @@ button,.opt,.tab,.qg,summary{touch-action:manipulation;-webkit-tap-highlight-col
    guarda en este dispositivo (IndexedDB, con localStorage de respaldo).
    Ningún dato sale del dispositivo.
    ===================================================================== */
-const APP_VERSION = "1.1";
+const APP_VERSION = "1.2";
 const BUILD = (() => {
   const ua = navigator.userAgent || "";
   const ios = /iP(hone|od|ad)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   let standalone = false; try{ standalone = window.navigator.standalone === true || matchMedia("(display-mode: standalone)").matches; }catch(e){}
-  return {pwa: true, id: "ffd9a9cf96", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
+  return {pwa: true, id: "blq20261025", ios, standalone, touch: (navigator.maxTouchPoints||0) > 0};
 })();
 const MODS = {
   ingles:        {cs:"ING", name:"Inglés",         cls:"ing"},
@@ -847,8 +847,14 @@ function dueList(mod){ const now=Date.now(); return allQ().filter(q=>(!mod||q.mo
 function pendingFails(mod){ return allQ().filter(q=>(!mod||q.modulo===mod) && (S.prog.q[q.id]?.box>=1 && S.prog.q[q.id]?.box<=5)); }
 function refersToPositions(q){ return q.fijarOrden || q.opciones.some(o=>typeof o==="string" && /\b(all (of the )?(above|correct)|both|none of|neither|a and b|b and c|todas|ninguna|ambas|all are)\b/i.test(o)); }
 
+/* bloques específicos de teoría: solo salen en su propio test, nunca en el general */
+const BLOQUES = {legislacion:{name:"Leyes y reglamentos", cs:"LEG"}, aeronaves:{name:"Aeronaves", cs:"AER"}};
+function effBloque(cfg){ const b = cfg.bloque||""; if(b==="*") return "*"; return cfg.mod==="teoria" && BLOQUES[b] ? b : ""; }
+function bloqueTag(cfg){ const b = cfg && effBloque(cfg); return b && b!=="*" ? " · "+BLOQUES[b].cs : ""; }
 function buildPool(cfg){
   let pool = allQ().filter(q=>q.modulo===cfg.mod);
+  const bq = effBloque(cfg);
+  if(bq!=="*") pool = pool.filter(q=>(q.bloque||"")===bq);   // test general: sin bloques específicos
   if(cfg.origen!=="todas") pool = pool.filter(q=>q.origen===cfg.origen);
   if(cfg.temas && cfg.temas.length) pool = pool.filter(q=>cfg.temas.includes(q.tema));
   if(!cfg.dudosas) pool = pool.filter(q=>q.revision!=="dudosa" && !S.prog.flags[q.id]?.dudosa);
@@ -1045,7 +1051,7 @@ function vHome(el){
   </div>
   <div class="mlist">${rows}</div>
   ${last?`<button class="mrow lastrow" data-att="${last.id}" type="button"><span class="label">Último</span><span class="nm">${esc(MODS[last.mod]?.name||last.mod)} · ${fmtDate(last.fecha)}</span><span class="v ${last.sc.nota>=7?"ok":last.sc.nota>=5?"warn":"ko"}">${fmtN(last.sc.nota)}</span><span></span><span class="chev">›</span></button>`:""}`;
-  $$("[data-mod]",el).forEach(b=>b.onclick=()=>{ draftCfg = {...(draftCfg||defaultCfg()), mod:b.dataset.mod, temas:[]}; go("new"); });
+  $$("[data-mod]",el).forEach(b=>b.onclick=()=>{ draftCfg = {...(draftCfg||defaultCfg()), mod:b.dataset.mod, temas:[], bloque:""}; go("new"); });
   wireCommon(el);
 }
 function vMore(el){
@@ -1081,14 +1087,16 @@ function wireCommon(el){
 }
 function histTable(list){
   return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Fecha</th><th>Mód.</th><th class="hm">Modo</th><th class="n">Preg.</th><th class="n">✓</th><th class="n">✗</th><th class="n hm">○</th><th class="n hm">Neto</th><th class="n">Nota</th><th class="n hm">Tiempo</th></tr></thead><tbody>
-  ${list.map(a=>`<tr class="click" data-att="${a.id}" tabindex="0"><td>${fmtDate(a.fecha)}</td><td>${MODS[a.mod]?.cs||a.mod}</td><td class="hm">${esc(a.modo)}</td><td class="n">${a.sc.n}</td><td class="n ok">${a.sc.ok}</td><td class="n ko">${a.sc.ko}</td><td class="n hm">${a.sc.bl}</td><td class="n hm">${fmtN(a.sc.net)}</td><td class="n ${a.sc.nota>=7?"ok":a.sc.nota>=5?"warn":"ko"}">${fmtN(a.sc.nota)}</td><td class="n hm">${fmtDur(a.dur)}</td></tr>`).join("")}
+  ${list.map(a=>`<tr class="click" data-att="${a.id}" tabindex="0"><td>${fmtDate(a.fecha)}</td><td>${MODS[a.mod]?.cs||a.mod}${bloqueTag(a.cfg)}</td><td class="hm">${esc(a.modo)}</td><td class="n">${a.sc.n}</td><td class="n ok">${a.sc.ok}</td><td class="n ko">${a.sc.ko}</td><td class="n hm">${a.sc.bl}</td><td class="n hm">${fmtN(a.sc.net)}</td><td class="n ${a.sc.nota>=7?"ok":a.sc.nota>=5?"warn":"ko"}">${fmtN(a.sc.nota)}</td><td class="n hm">${fmtDur(a.dur)}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
-function defaultCfg(){ return {mod:"ingles", n:20, origen:"todas", temas:[], modo:"normal", timer:0, penal:S.set.penal, shuffle:S.set.shuffle, dudosas:S.set.dudosas, inmediata:false}; }
+function defaultCfg(){ return {mod:"ingles", bloque:"", n:20, origen:"todas", temas:[], modo:"normal", timer:0, penal:S.set.penal, shuffle:S.set.shuffle, dudosas:S.set.dudosas, inmediata:false}; }
 let draftCfg = null;
 function vNew(el){
   const c = draftCfg || (draftCfg = defaultCfg());
-  const temas = [...new Set(allQ().filter(q=>q.modulo===c.mod).map(q=>q.tema))].sort((a,b)=>a.localeCompare(b,"es"));
+  const bqN = effBloque(c);
+  const temas = [...new Set(allQ().filter(q=>q.modulo===c.mod && (bqN==="*" || (q.bloque||"")===bqN)).map(q=>q.tema))].sort((a,b)=>a.localeCompare(b,"es"));
+  const nBloq = k => allQ().filter(q=>q.modulo==="teoria" && (q.bloque||"")===k).length;
   c.temas = c.temas.filter(t=>temas.includes(t));
   const avail = buildPool({...c, n:9999}).length;
   const seg = (name, opts, val) => `<div class="seg" data-seg="${name}">${opts.map(([v,l,dis])=>`<button type="button" data-v="${v}" aria-pressed="${String(v)===String(val)}" ${dis?"disabled":""}>${l}</button>`).join("")}</div>`;
@@ -1098,6 +1106,7 @@ function vNew(el){
   <div class="panel stack" style="gap:18px">
     <h2>Nuevo test</h2>
     <div class="field"><span class="label">Módulo</span>${seg("mod", Object.entries(MODS).map(([k,m])=>[k, m.name]), c.mod)}</div>
+    ${c.mod==="teoria"?`<div class="field"><span class="label">Tipo de test</span>${seg("bloque", [["","General"], ...Object.entries(BLOQUES).map(([k,b])=>[k, b.name+" · "+nBloq(k), !nBloq(k)])], effBloque(c))}</div>`:""}
     <div class="field"><span class="label">Preguntas</span>${seg("n", [[10,"10"],[20,"20"],[40,"40"],[50,"50"],[75,"75"]], c.n)}</div>
   </div>
   <details class="fold" data-k="new-temas" ${FOLD["new-temas"]?"open":""}><summary><span class="t">Temas</span><span class="sum">${c.temas.length?c.temas.length+(c.temas.length>1?" elegidos":" elegido"):"Todos"}</span></summary><div class="in">
@@ -1116,7 +1125,7 @@ function vNew(el){
   <p class="dim kbd-hint" style="margin:0;font-size:var(--fs-xs)">Teclado: <span class="kbd">1</span>–<span class="kbd">4</span> responder · <span class="kbd">←</span><span class="kbd">→</span> mover · <span class="kbd">M</span> marcar</p>`;
   $$("[data-seg]",el).forEach(g=>g.onclick=e=>{ const b=e.target.closest("button[data-v]"); if(!b||b.disabled) return; const k=g.dataset.seg; let v=b.dataset.v; if(["n","timer","penal"].includes(k)) v=Number(v);
     if(k==="n" && c.timer){ const per=c.timer/c.n; c.timer=Math.round(per*v); }
-    c[k]=v; if(k==="mod") c.temas=[]; vNew(el); });
+    c[k]=v; if(k==="mod"){ c.temas=[]; c.bloque=""; } if(k==="bloque") c.temas=[]; vNew(el); });
   const tm=$("#temas",el); if(tm) tm.onclick=e=>{ const b=e.target.closest("button[data-t]"); if(!b) return; const t=b.dataset.t; c.temas = c.temas.includes(t)? c.temas.filter(x=>x!==t) : [...c.temas, t]; vNew(el); };
   const tc=$("#tm-clear",el); if(tc) tc.onclick=()=>{ c.temas=[]; vNew(el); };
   $("#cfg-inm",el).onchange=e=>{ c.inmediata=e.target.checked; vNew(el); };
@@ -1133,7 +1142,7 @@ function vTest(el){
   const shown = T.cfg.inmediata && T.reveal[T.cur];
   el.innerHTML = `
   <div class="tbar">
-    <span class="tb-mod" style="color:${RADAR_COL[T.cfg.mod]}">${MODS[T.cfg.mod].cs}</span>
+    <span class="tb-mod" style="color:${RADAR_COL[T.cfg.mod]}">${MODS[T.cfg.mod].cs}${bloqueTag(T.cfg)}</span>
     <span class="tb-n">${T.cur+1}<small> / ${N}</small></span>
     <span class="tb-prog" aria-hidden="true"><span style="width:${(answered/N*100).toFixed(1)}%"></span></span>
     <span class="timer tab-num" id="timer">--:--</span>
@@ -1330,7 +1339,7 @@ function vReview(el){
   </div>
   <div class="mlist">${per.map(x=>`<button class="mrow" data-rv="${x.k}" type="button" ${x.due?"":"disabled"}><span class="cs" style="color:${RADAR_COL[x.k]}">${MODS[x.k].cs}</span><span class="nm">${MODS[x.k].name}</span><span class="v ${x.due?"warn":"dim"}">${x.due}<small>HOY</small></span><span class="v dim">${x.pend}<small>COLA</small></span><span class="chev">›</span></button>`).join("")}</div>
   ${fold("rv-cajas", "Cajas de repetición", "", `<div class="bars">${boxes.map((n,i)=>`<div class="bar"><span class="nm">Caja ${i+1} · ${i===0?"hoy":SRS_INT[i+1]+" d"}</span><span class="track"><span class="fill ${i<1?"low":i<3?"mid":""}" style="width:${Math.min(100, n*4)}%"></span></span><span class="pc">${n}</span></div>`).join("")}</div>`)}`;
-  $$("[data-rv]",el).forEach(b=>b.onclick=()=>startTest({...defaultCfg(), mod:b.dataset.rv, modo:"repaso", n:40, dudosas:true}));
+  $$("[data-rv]",el).forEach(b=>b.onclick=()=>startTest({...defaultCfg(), mod:b.dataset.rv, modo:"repaso", n:40, dudosas:true, bloque:"*"}));
 }
 
 function temaStats(mod){

@@ -1,7 +1,7 @@
 /* APP ATC · service worker: guarda la app en el dispositivo para que funcione sin conexión.
    Solo cachea los archivos de la propia app (nunca tus datos: esos están en IndexedDB y no salen del móvil).
    Al publicar una versión nueva cambia VERSION (lo hace build.py) y la app muestra «Actualizar». */
-const VERSION = "atc-ffd9a9cf96";
+const VERSION = "atc-blq20261025";
 const SHELL = [
   "./",
   "./index.html",
